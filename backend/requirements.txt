@@ -3,3 +3,5 @@ uvicorn
 openai
 pymupdf4llm
 python-dotenv
+numpy
+tiktoken
