@@ -2,31 +2,42 @@
 Embedding generation and similarity search using OpenAI embeddings.
 """
 
-import logging
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 from openai import OpenAI
 
 from utils.database import get_all_embeddings, get_chunks_by_ids
 
-logger = logging.getLogger(__name__)
-
 EMBEDDING_MODEL = "text-embedding-3-small"
 BATCH_SIZE = 100
+MAX_CONCURRENT_BATCHES = 5
+
+
+def _embed_batch(client: OpenAI, batch: list[str]) -> list[list[float]]:
+    response = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
+    return [item.embedding for item in response.data]
 
 
 def embed_texts(client: OpenAI, texts: list[str]) -> list[list[float]]:
-    """Embed a list of texts using OpenAI's embedding API."""
-    all_embeddings: list[list[float]] = []
+    """Embed a list of texts using concurrent API calls across batches."""
+    if not texts:
+        return []
 
-    for start in range(0, len(texts), BATCH_SIZE):
-        batch = texts[start : start + BATCH_SIZE]
-        response = client.embeddings.create(model=EMBEDDING_MODEL, input=batch)
-        batch_embeddings = [item.embedding for item in response.data]
-        all_embeddings.extend(batch_embeddings)
+    batches = [texts[i : i + BATCH_SIZE] for i in range(0, len(texts), BATCH_SIZE)]
 
-    return all_embeddings
+    if len(batches) == 1:
+        return _embed_batch(client, batches[0])
+
+    results: list[list[list[float]]] = [[] for _ in batches]
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_BATCHES) as pool:
+        futures = {pool.submit(_embed_batch, client, batch): idx for idx, batch in enumerate(batches)}
+        for future in as_completed(futures):
+            idx = futures[future]
+            results[idx] = future.result()
+
+    return [emb for batch_result in results for emb in batch_result]
 
 
 def search_chunks(

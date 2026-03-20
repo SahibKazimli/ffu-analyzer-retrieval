@@ -42,24 +42,9 @@ def chunk_document(
     current_tokens = 0
     chunk_index = 0
 
-    i = 0
-    while i < len(paragraphs):
-        para = paragraphs[i]
+    for para in paragraphs:
         para_tokens = _token_len(para)
 
-        # If a paragraph exceeds chunk_size, add it as its own chunk
-        if para_tokens > chunk_size and not current_paragraphs:
-            chunks.append({
-                "text": para,
-                "filename": filename,
-                "chunk_index": chunk_index,
-                "token_count": para_tokens,
-            })
-            chunk_index += 1
-            i += 1
-            continue
-
-        # If adding this paragraph would exceed the budget, flush
         if current_tokens + para_tokens > chunk_size and current_paragraphs:
             chunk_text = "\n\n".join(current_paragraphs)
             chunks.append({
@@ -70,24 +55,21 @@ def chunk_document(
             })
             chunk_index += 1
 
-            # Calculate overlap, walk backwards keeping paragraphs until
+            # Walk backwards to build overlap
             overlap_paragraphs: list[str] = []
             overlap_tokens = 0
             for prev_para in reversed(current_paragraphs):
-                prev_para_tokens = _token_len(prev_para)
-                if overlap_tokens + prev_para_tokens > overlap:
+                prev_tokens = _token_len(prev_para)
+                if overlap_tokens + prev_tokens > overlap:
                     break
                 overlap_paragraphs.insert(0, prev_para)
-                overlap_tokens += prev_para_tokens
+                overlap_tokens += prev_tokens
 
             current_paragraphs = overlap_paragraphs
             current_tokens = overlap_tokens
-            # Re-evaluate this paragraph
-            continue
 
         current_paragraphs.append(para)
         current_tokens += para_tokens
-        i += 1
 
     # Flush remaining
     if current_paragraphs:
