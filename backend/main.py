@@ -41,6 +41,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 
 def _sse(data: dict) -> str:
+    """Format a dict to send progress to the browser"""
     return f"data: {json.dumps(data)}\n\n"
 
 
@@ -48,16 +49,21 @@ def _sse(data: dict) -> str:
 def process():
     """Extract PDFs, chunk them, embed chunks, and store everything in SQLite."""
 
+    # Generator that yields SSE events, each yield is like a print() to the browser
     def generate():
         yield _sse({"type": "log", "msg": "Processing documents..."})
+
+        # Clear previous data
         db.execute("DELETE FROM chunks")
         db.execute("DELETE FROM documents")
         db.commit()
         paths = sorted(data_dir.rglob("*.pdf"))
         total_chunks = 0
 
+        # Extract PDFs to markdown in parallel
         yield _sse({"type": "log", "msg": f"Extracting {len(paths)} PDFs..."})
         extracted: list[tuple[str, str]] = []
+        
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {pool.submit(extract, path): path for path in paths}
             for future in as_completed(futures):
@@ -66,9 +72,11 @@ def process():
                     content = future.result()
                     extracted.append((path.name, content))
                     yield _sse({"type": "log", "msg": f"  Extracted {path.name}"})
+                    
                 except Exception as e:
                     yield _sse({"type": "log", "msg": f"  Failed: {path.name}: {e}"})
 
+        # Split each document into overlapping token-sized chunks
         yield _sse({"type": "log", "msg": f"Extraction complete: {len(extracted)} docs. Chunking..."})
 
         doc_data: list[tuple[int, str, list[dict]]] = []
@@ -83,6 +91,7 @@ def process():
             all_chunk_texts.extend(c["text"] for c in chunks)
             yield _sse({"type": "log", "msg": f"  Chunked {filename} → {len(chunks)} chunks"})
 
+        # Embed all chunks via OpenAI in concurrent batches
         yield _sse({"type": "log", "msg": f"{len(all_chunk_texts)} total chunks. Embedding..."})
 
         try:
@@ -91,6 +100,7 @@ def process():
             yield _sse({"type": "error", "error": str(e)})
             return
 
+        # Store chunks + embeddings in SQLite
         yield _sse({"type": "log", "msg": "Embedding complete. Storing in database..."})
 
         offset = 0
