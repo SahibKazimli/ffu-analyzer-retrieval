@@ -8,6 +8,8 @@ from pathlib import Path
 import pymupdf4llm
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -37,7 +39,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-@app.post("/process")
+@app.post("/api/process")
 def process():
     """Extract PDFs, chunk them, embed chunks, and store everything in SQLite."""
     logger.info("Processing documents...")
@@ -100,7 +102,7 @@ def process():
     }
 
 
-@app.post("/chat")
+@app.post("/api/chat")
 def chat(body: dict):
     """Multi-query retrieval + LLM answer generation."""
     question = body.get("message", "")
@@ -155,3 +157,16 @@ def chat(body: dict):
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)
         return {"response": f"Error: {e}"}
+
+
+# Serve frontend static files in production
+static_dir = Path(__file__).with_name("static")
+if static_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
+
+    @app.get("/{path:path}")
+    def serve_frontend(path: str):
+        file = static_dir / path
+        if file.is_file():
+            return FileResponse(file)
+        return FileResponse(static_dir / "index.html")

@@ -58,10 +58,12 @@ def chunk_document(
             # Walk backwards to build overlap
             overlap_paragraphs: list[str] = []
             overlap_tokens = 0
+            
             for prev_para in reversed(current_paragraphs):
                 prev_tokens = _token_len(prev_para)
                 if overlap_tokens + prev_tokens > overlap:
                     break
+                
                 overlap_paragraphs.insert(0, prev_para)
                 overlap_tokens += prev_tokens
 
