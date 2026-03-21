@@ -59,5 +59,6 @@ ffu-analyzer-retrieval/
 ## What I would do with more time
 
 - **Persistent storage** — replace SQLite with a vector database so data survives, also user based storage.
-- **File upload** — let users upload their own PDFs through the UI instead of relying on pre-bundled files in the container
+- **File upload** — let users upload their own PDFs through the UI 
 - **Streaming answers** — stream the LLM response token-by-token to the chat UI for a more responsive feel
+- **Multimodal support** — use a vision model to extract information from drawings, diagrams, and tables, which are currently ignored during extraction
