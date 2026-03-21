@@ -27,18 +27,39 @@ const ui = {
 
 function App() {
   const [status, setStatus] = useState('')
+  const [logs, setLogs] = useState<string[]>([])
+  const [processing, setProcessing] = useState(false)
   const [input, setInput] = useState('')
   const [thinking, setThinking] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
 
   const processFfu = async () => {
-    setStatus('Processing (extracting, chunking, embedding)...')
+    setProcessing(true)
+    setStatus('Processing...')
+    setLogs([])
     try {
-      const data = await fetch('/api/process', { method: 'POST' }).then((r) => r.json())
-      setStatus(`Done: ${data.documents} documents, ${data.chunks} chunks indexed`)
+      const res = await fetch('/api/process', { method: 'POST' })
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop()!
+        for (const part of parts) {
+          if (!part.startsWith('data: ')) continue
+          const data = JSON.parse(part.slice(6))
+          if (data.type === 'log') setLogs((p) => [...p, data.msg])
+          else if (data.type === 'done') setStatus(`Done: ${data.documents} documents, ${data.chunks} chunks indexed`)
+          else if (data.type === 'error') setStatus(`Error: ${data.error}`)
+        }
+      }
     } catch (e) {
       setStatus(`Error: ${e}`)
     }
+    setProcessing(false)
   }
 
   const send = async (e: FormEvent) => {
@@ -73,8 +94,15 @@ function App() {
   return (
     <div style={ui.page}>
       <div style={ui.app}>
-        <button onClick={processFfu} style={ui.field}>Process FFU</button>
+        <button onClick={processFfu} disabled={processing} style={ui.field}>
+          {processing ? 'Processing...' : 'Process FFU'}
+        </button>
         <div>{status}</div>
+        {logs.length > 0 && (
+          <div style={{ maxHeight: 140, overflowY: 'auto', padding: 8, background: '#1a1a2e', color: '#0f0', fontSize: 12, fontFamily: 'monospace', borderRadius: 4 }}>
+            {logs.map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+        )}
         <div style={ui.chat}>
           {messages.map((message, i) => (
             <div key={i}>

@@ -1,3 +1,4 @@
+import json
 import os
 import logging
 import sqlite3
@@ -9,7 +10,7 @@ import pymupdf4llm
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -39,67 +40,69 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data)}\n\n"
+
+
 @app.post("/api/process")
 def process():
     """Extract PDFs, chunk them, embed chunks, and store everything in SQLite."""
-    logger.info("Processing documents...")
-    db.execute("DELETE FROM chunks")
-    db.execute("DELETE FROM documents")
-    db.commit()
-    paths = sorted(data_dir.rglob("*.pdf"))
-    total_chunks = 0
 
-    logger.info(f"Extracting {len(paths)} PDFs...")
-    extracted: list[tuple[str, str]] = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(extract, path): path for path in paths}
-        for future in as_completed(futures):
-            path = futures[future]
-            try:
-                content = future.result()
-                extracted.append((path.name, content))
-                logger.info(f"  Extracted {path.name}")
-            except Exception as e:
-                logger.error(f"  Failed to extract {path.name}: {e}")
+    def generate():
+        yield _sse({"type": "log", "msg": "Processing documents..."})
+        db.execute("DELETE FROM chunks")
+        db.execute("DELETE FROM documents")
+        db.commit()
+        paths = sorted(data_dir.rglob("*.pdf"))
+        total_chunks = 0
 
-    print(f"Extraction complete: {len(extracted)} documents, chunking...")
+        yield _sse({"type": "log", "msg": f"Extracting {len(paths)} PDFs..."})
+        extracted: list[tuple[str, str]] = []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(extract, path): path for path in paths}
+            for future in as_completed(futures):
+                path = futures[future]
+                try:
+                    content = future.result()
+                    extracted.append((path.name, content))
+                    yield _sse({"type": "log", "msg": f"  Extracted {path.name}"})
+                except Exception as e:
+                    yield _sse({"type": "log", "msg": f"  Failed: {path.name}: {e}"})
 
-    # Chunk all documents first 
-    doc_data: list[tuple[int, str, list[dict]]] = []
-    all_chunk_texts: list[str] = []
+        yield _sse({"type": "log", "msg": f"Extraction complete: {len(extracted)} docs. Chunking..."})
 
-    for filename, content in extracted:
-        doc_id = insert_document(db, filename, content)
-        chunks = chunk_document(content, filename)
-        if not chunks:
-            continue
-        doc_data.append((doc_id, filename, chunks))
-        all_chunk_texts.extend(c["text"] for c in chunks)
+        doc_data: list[tuple[int, str, list[dict]]] = []
+        all_chunk_texts: list[str] = []
 
-    print(f"Chunked into {len(all_chunk_texts)} total chunks, embedding...")
+        for filename, content in extracted:
+            doc_id = insert_document(db, filename, content)
+            chunks = chunk_document(content, filename)
+            if not chunks:
+                continue
+            doc_data.append((doc_id, filename, chunks))
+            all_chunk_texts.extend(c["text"] for c in chunks)
+            yield _sse({"type": "log", "msg": f"  Chunked {filename} → {len(chunks)} chunks"})
 
-    # Embed all chunks in one batched call 
-    try:
-        all_embeddings = embed_texts(client, all_chunk_texts)
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+        yield _sse({"type": "log", "msg": f"{len(all_chunk_texts)} total chunks. Embedding..."})
 
-    print(f"Embedding complete, storing in database...")
+        try:
+            all_embeddings = embed_texts(client, all_chunk_texts)
+        except Exception as e:
+            yield _sse({"type": "error", "error": str(e)})
+            return
 
-    # Store chunks with their embeddings
-    offset = 0
-    for doc_id, filename, chunks in doc_data:
-        doc_embeddings = all_embeddings[offset : offset + len(chunks)]
-        insert_chunks(db, doc_id, chunks, doc_embeddings)
-        total_chunks += len(chunks)
-        offset += len(chunks)
+        yield _sse({"type": "log", "msg": "Embedding complete. Storing in database..."})
 
-    logger.info(f"Done! {len(extracted)} documents, {total_chunks} chunks total.")
-    return {
-        "status": "ok",
-        "documents": len(extracted),
-        "chunks": total_chunks,
-    }
+        offset = 0
+        for doc_id, filename, chunks in doc_data:
+            doc_embeddings = all_embeddings[offset : offset + len(chunks)]
+            insert_chunks(db, doc_id, chunks, doc_embeddings)
+            total_chunks += len(chunks)
+            offset += len(chunks)
+
+        yield _sse({"type": "done", "documents": len(extracted), "chunks": total_chunks})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.post("/api/chat")
