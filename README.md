@@ -56,12 +56,6 @@ ffu-analyzer-retrieval/
 - **Frontend:** React, Vite, TypeScript
 - **Deployment:** Docker, GCP Cloud Run
 
-## Key improvements made
-
-- **Concurrent embedding** — embeddings are generated in parallel batches using `ThreadPoolExecutor` instead of sequentially
-- **Multi-query retrieval** — generates diverse sub-queries to improve search recall across different document sections
-- **SSE progress streaming** — the processing endpoint streams real-time progress to the frontend so users see extraction, chunking, and embedding status as it happens
-
 ## What I would do with more time
 
 - **Persistent storage** — replace SQLite with a vector database so data survives, also user based storage.
