@@ -1,0 +1,7 @@
+backend/ffu.db
+backend/__pycache__
+backend/utils/__pycache__
+frontend/node_modules
+.git
+.env
+*.pyc
