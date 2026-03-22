@@ -2,7 +2,7 @@ import json
 import os
 import logging
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -29,7 +29,8 @@ db = sqlite3.connect(Path(__file__).with_name("ffu.db"), check_same_thread=False
 db.execute("PRAGMA foreign_keys = ON")
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 data_dir = Path("data")
-extract = lambda path: pymupdf4llm.to_markdown(str(path), ignore_images=True, ignore_graphics=True)
+def extract(path):
+    return pymupdf4llm.to_markdown(str(path), ignore_images=True, ignore_graphics=True)
 
 
 @asynccontextmanager
@@ -65,7 +66,7 @@ def process():
             yield _sse({"type": "log", "msg": f"Extracting {len(paths)} PDFs..."})
 
             extracted = []
-            with ThreadPoolExecutor(max_workers=6) as pool:
+            with ProcessPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(extract, path): path for path in paths}
                 for future in as_completed(futures):
                     name = futures[future].name
