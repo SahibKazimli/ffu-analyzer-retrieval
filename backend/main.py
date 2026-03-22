@@ -65,7 +65,7 @@ def process():
             yield _sse({"type": "log", "msg": f"Extracting {len(paths)} PDFs..."})
 
             extracted = []
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            with ThreadPoolExecutor(max_workers=6) as pool:
                 futures = {pool.submit(extract, path): path for path in paths}
                 for future in as_completed(futures):
                     name = futures[future].name
