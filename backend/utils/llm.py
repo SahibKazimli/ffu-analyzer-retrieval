@@ -2,6 +2,7 @@
 LLM utilities: multi-query generation and answer synthesis.
 """
 
+import json
 import logging
 from openai import OpenAI
 

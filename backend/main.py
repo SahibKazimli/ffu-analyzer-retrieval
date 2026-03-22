@@ -18,6 +18,8 @@ from utils.database import init_db, clear_all, insert_document, insert_chunks, g
 from utils.chunking import chunk_document
 from utils.embeddings import embed_texts, search_chunks
 from utils.llm import generate_sub_queries, build_context, generate_answer
+from eval.judge import refine_with_feedback
+from memory.episodic import save_interaction, recall, format_episodic_context
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -47,72 +49,57 @@ def _sse(data: dict) -> str:
 
 @app.post("/api/process")
 def process():
-    """Extract PDFs, chunk them, embed chunks, and store everything in SQLite."""
+    """Extract PDFs, chunk them, embed chunks, and store in SQLite. """
 
     # Generator that yields SSE events, each yield is like a print() to the browser
     def generate():
         yield _sse({"type": "log", "msg": "Processing documents..."})
 
-        # Clear previous data
-        db.execute("DELETE FROM chunks")
-        db.execute("DELETE FROM documents")
-        db.commit()
-        paths = sorted(data_dir.rglob("*.pdf"))
-        total_chunks = 0
-
-        # Extract PDFs to markdown in parallel
-        yield _sse({"type": "log", "msg": f"Extracting {len(paths)} PDFs..."})
-        extracted: list[tuple[str, str]] = []
-        
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = {pool.submit(extract, path): path for path in paths}
-            for future in as_completed(futures):
-                path = futures[future]
-                try:
-                    content = future.result()
-                    extracted.append((path.name, content))
-                    yield _sse({"type": "log", "msg": f"  Extracted {path.name}"})
-                    
-                except Exception as e:
-                    yield _sse({"type": "log", "msg": f"  Failed: {path.name}: {e}"})
-
-        # Split each document into overlapping token-sized chunks
-        yield _sse({"type": "log", "msg": f"Extraction complete: {len(extracted)} docs. Chunking..."})
-
-        doc_data: list[tuple[int, str, list[dict]]] = []
-        all_chunk_texts: list[str] = []
-
-        for filename, content in extracted:
-            doc_id = insert_document(db, filename, content)
-            chunks = chunk_document(content, filename)
-            if not chunks:
-                continue
-            doc_data.append((doc_id, filename, chunks))
-            all_chunk_texts.extend(c["text"] for c in chunks)
-            yield _sse({"type": "log", "msg": f"  Chunked {filename} → {len(chunks)} chunks"})
-
-        # Embed all chunks via OpenAI in concurrent batches
-        yield _sse({"type": "log", "msg": f"{len(all_chunk_texts)} total chunks. Embedding..."})
-
+    def stream():
         try:
-            all_embeddings = embed_texts(client, all_chunk_texts)
+            db.execute("DELETE FROM chunks")
+            db.execute("DELETE FROM documents")
+            db.commit()
+
+            paths = sorted(data_dir.rglob("*.pdf"))
+            yield _sse({"type": "log", "msg": f"Extracting {len(paths)} PDFs..."})
+
+            extracted = []
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = {pool.submit(extract, path): path for path in paths}
+                for future in as_completed(futures):
+                    name = futures[future].name
+                    extracted.append((name, future.result()))
+                    yield _sse({"type": "log", "msg": f"  Extracted {name}"})
+
+            yield _sse({"type": "log", "msg": "Chunking..."})
+
+            doc_chunks = []
+            all_texts = []
+            for filename, content in extracted:
+                doc_id = insert_document(db, filename, content)
+                chunks = chunk_document(content, filename)
+                if not chunks:
+                    continue
+                doc_chunks.append((doc_id, chunks))
+                all_texts.extend(c["text"] for c in chunks)
+                yield _sse({"type": "log", "msg": f"  Chunked {filename} → {len(chunks)} chunks"})
+
+            yield _sse({"type": "log", "msg": f"{len(all_texts)} chunks. Embedding..."})
+            all_embeddings = embed_texts(client, all_texts)
+
+            yield _sse({"type": "log", "msg": "Storing in database..."})
+            total, offset = 0, 0
+            for doc_id, chunks in doc_chunks:
+                insert_chunks(db, doc_id, chunks, all_embeddings[offset:offset + len(chunks)])
+                total += len(chunks)
+                offset += len(chunks)
+
+            yield _sse({"type": "done", "documents": len(extracted), "chunks": total})
         except Exception as e:
             yield _sse({"type": "error", "error": str(e)})
-            return
 
-        # Store chunks + embeddings in SQLite
-        yield _sse({"type": "log", "msg": "Embedding complete. Storing in database..."})
-
-        offset = 0
-        for doc_id, filename, chunks in doc_data:
-            doc_embeddings = all_embeddings[offset : offset + len(chunks)]
-            insert_chunks(db, doc_id, chunks, doc_embeddings)
-            total_chunks += len(chunks)
-            offset += len(chunks)
-
-        yield _sse({"type": "done", "documents": len(extracted), "chunks": total_chunks})
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 @app.post("/api/chat")
@@ -146,9 +133,25 @@ def chat(body: dict):
         for chunk in ranked_chunks[:5]:
             logger.info(f"  [{chunk['score']:.3f}] {chunk['filename']} (chunk {chunk['chunk_index']})")
 
-        # Build context and generate answer
-        context = build_context(ranked_chunks)
-        answer = generate_answer(client, question, context, history)
+        # Recall relevant past interactions from episodic memory
+        memories = recall(db, client, question, top_k=3)
+        episodic_context = format_episodic_context(memories)
+
+        # Build context from document chunks + episodic memory
+        doc_context = build_context(ranked_chunks)
+        context = doc_context
+        if episodic_context:
+            context += "\n\nPREVIOUS RELEVANT INTERACTIONS:\n" + episodic_context
+
+        # Generate answer, judge it, refine up to 2 times if score < 0.7
+        answer, evaluation, refine_count = refine_with_feedback(
+            client, question, context, history,
+            generate_fn=generate_answer,
+            max_attempts=2, threshold=0.7,
+        )
+
+        # Save this interaction to episodic memory for future recall
+        save_interaction(db, client, question, answer)
 
         # Build source references
         sources = []
@@ -164,7 +167,15 @@ def chat(body: dict):
 
         return {
             "response": answer,
-            "sources": sources[:10],  # Top 10 unique source documents
+            "sources": sources[:10],
+            "debug": {
+                "sub_queries": sub_queries,
+                "chunks_retrieved": len(ranked_chunks),
+                "top_scores": [{"file": c["filename"], "score": round(c["score"], 3)} for c in ranked_chunks[:5]],
+                "episodic_memories_used": len(memories),
+                "judge": evaluation,
+                "refinements": refine_count,
+            },
         }
 
     except Exception as e:
