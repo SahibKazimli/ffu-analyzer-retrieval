@@ -2,7 +2,9 @@ import { FormEvent, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 type Source = { filename: string; chunk_index: number; score: number }
-type Message = { role: 'user' | 'assistant'; content: string; sources?: Source[] }
+type Judge = { score: number; reasoning: string }
+type Debug = { sub_queries: string[]; chunks_retrieved: number; top_scores: { file: string; score: number }[]; episodic_memories_used: number; judge?: Judge; refinements?: number }
+type Message = { role: 'user' | 'assistant'; content: string; sources?: Source[]; debug?: Debug }
 
 const ui = {
   page: { margin: 0, minHeight: '100vh', background: '#f2f2f2', color: '#222', fontFamily: 'system-ui, sans-serif' } as const,
@@ -80,7 +82,7 @@ function App() {
 
       setMessages((m) => [
         ...m,
-        { role: 'assistant', content: data.response, sources: data.sources },
+        { role: 'assistant', content: data.response, sources: data.sources, debug: data.debug },
       ])
     } catch (e) {
       setMessages((m) => [
@@ -116,6 +118,23 @@ function App() {
                       📄 {s.filename}
                     </span>
                   ))}
+                </div>
+              )}
+              {message.debug && (
+                <div style={{ marginTop: 6, padding: 8, background: '#1a1a2e', color: '#a0a0a0', fontSize: 11, fontFamily: 'monospace', borderRadius: 4, maxWidth: '80%' }}>
+                  <div style={{ color: '#6ee7b7' }}>Queries: [{message.debug.sub_queries.join(' | ')}]</div>
+                  <div>Retrieved {message.debug.chunks_retrieved} chunks — top: {message.debug.top_scores.map(s => `${s.file.slice(0, 25)}(${s.score})`).join(', ')}</div>
+                  <div style={{ color: message.debug.episodic_memories_used > 0 ? '#fbbf24' : '#666' }}>
+                    Episodic memories used: {message.debug.episodic_memories_used}
+                  </div>
+                  {message.debug.refinements != null && message.debug.refinements > 0 && (
+                    <div style={{ color: '#c084fc' }}>Refined {message.debug.refinements}x after judge feedback</div>
+                  )}
+                  {message.debug.judge && message.debug.judge.score >= 0 && (
+                    <div style={{ color: message.debug.judge.score >= 0.7 ? '#6ee7b7' : message.debug.judge.score >= 0.4 ? '#fbbf24' : '#f87171' }}>
+                      Judge: {message.debug.judge.score}/1.0 — {message.debug.judge.reasoning}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
