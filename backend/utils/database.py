@@ -25,6 +25,13 @@ def init_db(db: sqlite3.Connection) -> None:
             embedding BLOB,
             FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
         );
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            embedding BLOB,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     db.commit()
 
