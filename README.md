@@ -70,7 +70,8 @@ ffu-analyzer-retrieval/
 
 ## What I would do with more time
 
-- **Persistent storage** — replace SQLite with a vector database so data survives, also user based storage.
-- **File upload** — let users upload their own PDFs through the UI 
-- **Streaming answers** — stream the LLM response token-by-token to the chat UI for a more responsive feel
-- **Multimodal support** — use a vision model to extract information from drawings, diagrams, and tables, which are currently ignored during extraction
+- **Vector database** — replace SQLite with pgvector or Pinecone for persistent, scalable storage across sessions and users.
+- **Procedural memory (COALA)** — build a knowledge base from judge feedback, storing what the model learns to avoid and what worked in the past. With an ephemeral database this wasn't practical, but would be valuable with persistent storage. The episodic memory could also be extended with dynamic behavioural guidelines.
+- **Streaming answers** — stream the LLM response token-by-token for better perceived performance, so the user doesn't have to wait for the entire answer block.
+- **File upload** — let users upload their own PDFs through the UI.
+- **Multimodal support** — use a vision model to extract information from drawings, diagrams, and tables, which are currently ignored during extraction.
