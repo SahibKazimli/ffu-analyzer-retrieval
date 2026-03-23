@@ -54,7 +54,7 @@ function App() {
           if (!part.startsWith('data: ')) continue
           const data = JSON.parse(part.slice(6))
           if (data.type === 'log') setLogs((p) => [...p, data.msg])
-          else if (data.type === 'done') setStatus(`Done: ${data.documents} documents, ${data.chunks} chunks indexed`)
+          else if (data.type === 'done') setStatus(`Done: ${data.documents} documents, ${data.chunks} chunks indexed, Ready to chat!`)
           else if (data.type === 'error') setStatus(`Error: ${data.error}`)
         }
       }

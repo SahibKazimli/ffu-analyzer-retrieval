@@ -11,7 +11,7 @@ Key additions are:
 - **Episodic memory (COALA)** — Past Q&A interactions are embedded and stored. On new queries, relevant previous answers are recalled and included as additional context, allowing the system to build on its own conversation history.
 - **LLM-as-a-judge** - Implemented judge to evaluate answers and provide feedback.
 - **Refinement Loop** - Implemented a refinement loop where the system can refine its answers based on feedback from the judge.
-- **Streaming** - Implemented streaming of events to the chat UI for a more responsive feel as well as judge feedback to guide user in improving their questions if answers are lackluster. 
+- **Streaming** - Implemented streaming of events to the chat UI for a more responsive feel. Judge feedback included to guide user in improving their questions if answers are lackluster. 
 
 
 ## Live demo
@@ -71,4 +71,5 @@ ffu-analyzer-retrieval/
 
 - **Persistent storage** — replace SQLite with a vector database so data survives, also user based storage.
 - **File upload** — let users upload their own PDFs through the UI 
+- **Streaming answers** — stream the LLM response token-by-token to the chat UI for a more responsive feel
 - **Multimodal support** — use a vision model to extract information from drawings, diagrams, and tables, which are currently ignored during extraction
