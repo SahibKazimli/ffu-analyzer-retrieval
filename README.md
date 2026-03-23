@@ -24,6 +24,7 @@ Key additions are:
 > **Note:** The database is ephemeral. If the container has restarted since the last use, one person needs to click Process FFU before chatting. Subsequent users can chat immediately, pressing Process FFU again will affect all other users as well. 
 
 ![FFU Analyzer screenshot](screenshot.png)
+![FFU Analyzer](image.png)
 
 ## How it works
 
