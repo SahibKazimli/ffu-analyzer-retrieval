@@ -8,6 +8,11 @@ Key additions are:
 - **Chunking** — Documents split into 500-token chunks with 100-token overlap
 - **Embedding** — Chunks are embedded via OpenAI in concurrent batches with threads
 - **Multi-query generation** — A big problem with RAG is scalability, large datasets drastically decrease performance in regards to both time and precision. Multiple sub-queries improve recall across different document sections.
+- **Episodic memory (COALA)** — Past Q&A interactions are embedded and stored. On new queries, relevant previous answers are recalled and included as additional context, allowing the system to build on its own conversation history.
+- **LLM-as-a-judge** - Implemented judge to evaluate answers and provide feedback.
+- **Refinement Loop** - Implemented a refinement loop where the system can refine its answers based on feedback from the judge.
+- **Streaming** - Implemented streaming of events to the chat UI for a more responsive feel as well as judge feedback to guide user in improving their questions if answers are lackluster. 
+
 
 ## Live demo
 
@@ -27,23 +32,29 @@ Key additions are:
 3. All chunks are embedded via OpenAI in concurrent batches and stored alongside their vectors in SQLite
 4. When a user asks a question, `gpt-4o-mini` generates 3 alternative search queries to cover different angles of the question
 5. Each query is embedded and compared against all stored chunks using cosine similarity. Results are deduplicated and the top 15 are selected
-6. `gpt-4o` synthesizes an answer from the retrieved chunks, citing source documents
+6. The system also searches **episodic memory** — past Q&A interactions are embedded and compared to the new question. Relevant previous answers are included as additional context (COALA framework)
+7. `gpt-4o` synthesizes an answer from the retrieved chunks + relevant past interactions, citing source documents
+8. An **LLM-as-a-judge** (`gpt-4o`) evaluates the answer for faithfulness, relevance, and completeness, returning a score and reasoning
+9. If the judge scores below 0.8, the system enters a **refinement loop**.
+10. Each pipeline step is **streamed** to the UI as server-sent events, so the user sees live progress (searching, generating, evaluating, refining)
 
 ## Project structure
 
 ```
 ffu-analyzer-retrieval/
 ├── backend/
-│   ├── main.py                 # FastAPI app endpoints
-│   ├── requirements.txt        # Python dependencies
-│   └── utils/
-│       ├── database.py         # SQLite 
-│       ├── chunking.py         # Paragraph chunking with overlap
-│       ├── embeddings.py       # Batch embedding and cosine similarity search
-│       └── llm.py              # Sub-query generation and answer synthesis
+│   ├── main.py                 # FastAPI app, SSE streaming endpoints
+│   ├── utils/
+│   │   ├── database.py         # SQLite schema and helpers
+│   │   ├── chunking.py         # Paragraph chunking with overlap
+│   │   ├── embeddings.py       # Batch embedding and cosine similarity search
+│   │   └── llm.py              # Sub-query generation and answer synthesis
+│   ├── eval/
+│   │   └── judge.py            # LLM-as-a-judge evaluation
+│   └── memory/
+│       └── episodic.py         # COALA episodic memory (store/recall Q&A)
 ├── frontend/
 │   ├── src/main.tsx            
-│   ├── package.json
 │   └── vite.config.js          
 ├── Dockerfile                  
 ├── .env.example                        
@@ -60,5 +71,4 @@ ffu-analyzer-retrieval/
 
 - **Persistent storage** — replace SQLite with a vector database so data survives, also user based storage.
 - **File upload** — let users upload their own PDFs through the UI 
-- **Streaming answers** — stream the LLM response token-by-token to the chat UI for a more responsive feel
 - **Multimodal support** — use a vision model to extract information from drawings, diagrams, and tables, which are currently ignored during extraction
