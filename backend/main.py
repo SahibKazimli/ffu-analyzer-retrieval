@@ -18,7 +18,7 @@ from utils.database import init_db, clear_all, insert_document, insert_chunks, g
 from utils.chunking import chunk_document
 from utils.embeddings import embed_texts, search_chunks
 from utils.llm import generate_sub_queries, build_context, generate_answer
-from eval.judge import refine_with_feedback
+from eval.judge import judge_answer
 from memory.episodic import save_interaction, recall, format_episodic_context
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -112,76 +112,110 @@ def chat(body: dict):
     if not question.strip():
         return {"response": "Please ask a question."}
 
-    try:
-        # Generate diverse sub-queries for better retrieval
-        logger.info(f"Question: {question}")
-        sub_queries = generate_sub_queries(client, question)
+    def stream():
+        try:
+            # Generate diverse sub-queries for better retrieval
+            yield _sse({"type": "status", "step": "queries", "msg": "Generating search queries..."})
+            logger.info(f"Question: {question}")
+            sub_queries = generate_sub_queries(client, question)
 
-        # Retrieve top chunks for each sub-query
-        all_chunks: dict[int, dict] = {}  # chunk_id -> chunk (dedup)
-        for query in sub_queries:
-            results = search_chunks(db, client, query, top_k=10)
-            for chunk in results:
-                chunk_id = chunk["chunk_id"]
-                # Keep the highest score for each chunk
-                if chunk_id not in all_chunks or chunk["score"] > all_chunks[chunk_id]["score"]:
-                    all_chunks[chunk_id] = chunk
+            # Retrieve top chunks for each sub-query
+            yield _sse({"type": "status", "step": "retrieval", "msg": f"Searching documents ({len(sub_queries)} queries)..."})
+            all_chunks: dict[int, dict] = {}
+            for query in sub_queries:
+                results = search_chunks(db, client, query, top_k=10)
+                for chunk in results:
+                    chunk_id = chunk["chunk_id"]
+                    # Keep the highest score for each chunk
+                    if chunk_id not in all_chunks or chunk["score"] > all_chunks[chunk_id]["score"]:
+                        all_chunks[chunk_id] = chunk
 
-        # Sort by score and take top 15
-        ranked_chunks = sorted(all_chunks.values(), key=lambda chunk: chunk["score"], reverse=True)[:15]
-        logger.info(f"Retrieved {len(ranked_chunks)} unique chunks from {len(sub_queries)} queries")
+            # Sort by score and take top 15
+            ranked_chunks = sorted(all_chunks.values(), key=lambda chunk: chunk["score"], reverse=True)[:15]
+            logger.info(f"Retrieved {len(ranked_chunks)} unique chunks from {len(sub_queries)} queries")
 
-        for chunk in ranked_chunks[:5]:
-            logger.info(f"  [{chunk['score']:.3f}] {chunk['filename']} (chunk {chunk['chunk_index']})")
+            for chunk in ranked_chunks[:5]:
+                logger.info(f"  [{chunk['score']:.3f}] {chunk['filename']} (chunk {chunk['chunk_index']})")
 
-        # Recall relevant past interactions from episodic memory
-        memories = recall(db, client, question, top_k=3)
-        episodic_context = format_episodic_context(memories)
+            # Recall relevant past interactions from episodic memory
+            yield _sse({"type": "status", "step": "memory", "msg": "Recalling previous conversations..."})
+            memories = recall(db, client, question, top_k=3)
+            episodic_context = format_episodic_context(memories)
 
-        # Build context from document chunks + episodic memory
-        doc_context = build_context(ranked_chunks)
-        context = doc_context
-        if episodic_context:
-            context += "\n\nPREVIOUS RELEVANT INTERACTIONS:\n" + episodic_context
+            # Build context from document chunks + episodic memory
+            doc_context = build_context(ranked_chunks)
+            context = doc_context
+            if episodic_context:
+                context += "\n\nPREVIOUS RELEVANT INTERACTIONS:\n" + episodic_context
 
-        # Generate answer, judge it, refine up to 2 times if score < 0.7
-        answer, evaluation, refine_count = refine_with_feedback(
-            client, question, context, history,
-            generate_fn=generate_answer,
-            max_attempts=2, threshold=0.7,
-        )
+            # Generate answer
+            yield _sse({"type": "status", "step": "generating", "msg": "Generating answer..."})
+            answer = generate_answer(client, question, context, history)
 
-        # Save this interaction to episodic memory for future recall
-        save_interaction(db, client, question, answer)
+            # Judge answer quality
+            yield _sse({"type": "status", "step": "judging", "msg": "Evaluating answer quality..."})
+            evaluation = judge_answer(client, question, answer, context)
+            refine_count = 0
 
-        # Build source references
-        sources = []
-        seen_files = set()
-        for chunk in ranked_chunks:
-            if chunk["filename"] not in seen_files:
-                sources.append({
-                    "filename": chunk["filename"],
-                    "chunk_index": chunk["chunk_index"],
-                    "score": round(chunk["score"], 3),
-                })
-                seen_files.add(chunk["filename"])
+            # Refine if score is below threshold, 3 max attempts
+            max_attempts = 3
+            threshold = 0.8
+            while evaluation.get("score", 1) < threshold and refine_count < max_attempts:
+                refine_count += 1
+                score = evaluation.get("score", 0)
+                criticism = evaluation.get("reasoning", "")
+                yield _sse({"type": "status", "step": "refining", "msg": f"Refining answer (attempt {refine_count}/{max_attempts})..."})
 
-        return {
-            "response": answer,
-            "sources": sources[:10],
-            "debug": {
-                "sub_queries": sub_queries,
-                "chunks_retrieved": len(ranked_chunks),
-                "top_scores": [{"file": c["filename"], "score": round(c["score"], 3)} for c in ranked_chunks[:5]],
-                "episodic_memories_used": len(memories),
-                "judge": evaluation,
-                "refinements": refine_count,
-            },
-        }
+                refinement_history = (history or []) + [
+                    {"role": "assistant", "content": answer},
+                    {"role": "user", "content": (
+                        f"En oberoende utvärdering gav ditt svar {score}/1.0 med följande kritik:\n"
+                        f"\"{criticism}\"\n\n"
+                        f"Skriv om ditt svar och åtgärda dessa specifika problem. "
+                        f"Använd BARA information som finns i den givna kontexten. "
+                        f"Om du inte hittar stöd för ett påstående i kontexten, ta bort det."
+                    )},
+                ]
+                answer = generate_answer(client, question, context, refinement_history)
 
-    except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
-        return {"response": f"Error: {e}"}
+                yield _sse({"type": "status", "step": "judging", "msg": "Re-evaluating refined answer..."})
+                evaluation = judge_answer(client, question, answer, context)
+
+            # Save to episodic memory
+            yield _sse({"type": "status", "step": "saving", "msg": "Saving to memory..."})
+            save_interaction(db, client, question, answer)
+
+            # Build source references
+            sources = []
+            seen_files = set()
+            for chunk in ranked_chunks:
+                if chunk["filename"] not in seen_files:
+                    sources.append({
+                        "filename": chunk["filename"],
+                        "chunk_index": chunk["chunk_index"],
+                        "score": round(chunk["score"], 3),
+                    })
+                    seen_files.add(chunk["filename"])
+
+            yield _sse({
+                "type": "done",
+                "response": answer,
+                "sources": sources[:10],
+                "debug": {
+                    "sub_queries": sub_queries,
+                    "chunks_retrieved": len(ranked_chunks),
+                    "top_scores": [{"file": c["filename"], "score": round(c["score"], 3)} for c in ranked_chunks[:5]],
+                    "episodic_memories_used": len(memories),
+                    "judge": evaluation,
+                    "refinements": refine_count,
+                },
+            })
+
+        except Exception as e:
+            logger.error(f"Chat error: {e}", exc_info=True)
+            yield _sse({"type": "error", "error": str(e)})
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 # Serve frontend static files in production
