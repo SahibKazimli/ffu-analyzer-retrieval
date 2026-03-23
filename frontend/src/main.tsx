@@ -64,6 +64,8 @@ function App() {
     setProcessing(false)
   }
 
+  const [statusMsg, setStatusMsg] = useState('')
+
   const send = async (e: FormEvent) => {
     e.preventDefault()
     if (!input.trim() || thinking) return
@@ -71,19 +73,42 @@ function App() {
     const question = input.trim()
     setInput('')
     setThinking(true)
+    setStatusMsg('Starting...')
     setMessages((m) => [...m, { role: 'user', content: question }])
 
     try {
-      const data = await fetch('/api/chat', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: question, history }),
-      }).then((r) => r.json())
-
-      setMessages((m) => [
-        ...m,
-        { role: 'assistant', content: data.response, sources: data.sources, debug: data.debug },
-      ])
+      })
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop()!
+        for (const part of parts) {
+          if (!part.startsWith('data: ')) continue
+          const data = JSON.parse(part.slice(6))
+          if (data.type === 'status') {
+            setStatusMsg(data.msg)
+          } else if (data.type === 'done') {
+            setMessages((m) => [
+              ...m,
+              { role: 'assistant', content: data.response, sources: data.sources, debug: data.debug },
+            ])
+          } else if (data.type === 'error') {
+            setMessages((m) => [
+              ...m,
+              { role: 'assistant', content: `Error: ${data.error}` },
+            ])
+          }
+        }
+      }
     } catch (e) {
       setMessages((m) => [
         ...m,
@@ -91,6 +116,7 @@ function App() {
       ])
     }
     setThinking(false)
+    setStatusMsg('')
   }
 
   return (
@@ -139,7 +165,7 @@ function App() {
               )}
             </div>
           ))}
-          {thinking && <div style={{ ...ui.msg, ...ui.assistant, color: '#666' }}>Thinking...</div>}
+          {thinking && <div style={{ ...ui.msg, ...ui.assistant, color: '#666' }}>{statusMsg || 'Thinking...'}</div>}
         </div>
         <form onSubmit={send} style={ui.form}>
           <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask about the FFU documents" style={ui.field} />
